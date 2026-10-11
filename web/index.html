@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASCII Art · 图片转字符画（网页版）</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>ASCII Art<span class="title-accent">图片转字符画</span></h1>
+    <p class="subtitle">Go 版 asciiart 的纯前端复刻 · 全部计算在浏览器本地完成，图片不会上传</p>
+  </header>
+
+  <main class="layout">
+    <!-- 控制面板：选项与 CLI 参数一一对应 -->
+    <aside class="panel controls" aria-label="转换选项">
+      <section class="group">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择或拖入图片">
+          <input type="file" id="file"
+                 accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,.png,.jpg,.jpeg,.gif,.bmp,.webp">
+          <p class="dropzone-main"><strong>点击选择</strong> 或拖拽图片到页面任意位置</p>
+          <p class="muted small">支持 PNG / JPEG / GIF（首帧）/ BMP / WebP</p>
+        </div>
+        <div class="preview">
+          <img id="preview" alt="原图预览" hidden>
+          <p id="previewEmpty" class="muted small">尚未选择图片</p>
+        </div>
+      </section>
+
+      <section class="group">
+        <h2>转换选项</h2>
+        <div class="field">
+          <label for="widthRange">输出宽度 <span class="muted">字符列数 · -w</span></label>
+          <div class="row">
+            <input type="range" id="widthRange" min="20" max="300" step="1" value="80"
+                   aria-label="输出宽度滑块">
+            <input type="number" id="widthNum" min="10" max="500" step="1" value="80" inputmode="numeric"
+                   aria-label="输出宽度数值">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="ramp">字符梯度 <span class="muted">-r</span></label>
+          <select id="ramp">
+            <option value="standard" selected>standard · 标准</option>
+            <option value="short">short · 短梯度</option>
+            <option value="detailed">detailed · 详细（70 级）</option>
+            <option value="blocks">blocks · 块元素</option>
+            <option value="custom">custom · 自定义</option>
+          </select>
+          <div id="customRampWrap" hidden>
+            <input type="text" id="customRamp" value="@%#*+=-:. " spellcheck="false"
+                   placeholder="从暗到亮排列，如 @#+=. " aria-label="自定义字符梯度">
+            <p class="muted small">从暗到亮排列，等价 CLI 的 --custom-ramp</p>
+          </div>
+        </div>
+
+        <div class="field checkboxes">
+          <label class="checkbox"><input type="checkbox" id="invert">反转亮度 <span class="muted">-i</span></label>
+          <label class="checkbox"><input type="checkbox" id="color">彩色模式 <span class="muted">-c</span></label>
+        </div>
+
+        <div class="field">
+          <label for="aspect">宽高比修正 <span class="muted">--aspect · 默认 0.5</span></label>
+          <input type="number" id="aspect" min="0.05" max="2" step="0.05" value="0.5" inputmode="decimal">
+        </div>
+
+        <div class="field">
+          <label for="fontSize">显示字号 <span class="muted" id="fontSizeVal">10px</span></label>
+          <input type="range" id="fontSize" min="4" max="20" step="1" value="10">
+        </div>
+      </section>
+
+      <section class="group actions">
+        <button id="copyBtn" type="button" disabled>复制文本</button>
+        <button id="txtBtn" type="button" disabled>下载 .txt</button>
+        <button id="htmlBtn" type="button" disabled>下载 .html</button>
+      </section>
+    </aside>
+
+    <!-- 输出面板 -->
+    <section class="panel output" aria-label="字符画输出">
+      <div class="output-head">
+        <span id="info" class="muted"></span>
+        <span id="error" class="error" role="alert" hidden></span>
+      </div>
+      <div class="output-body">
+        <pre id="ascii" tabindex="0" spellcheck="false"></pre>
+        <div id="placeholder" class="placeholder">
+          <p>选择一张图片，字符画将在这里生成</p>
+          <p class="muted small">等价 CLI 命令：<code>asciiart -f photo.png -w 80</code></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
