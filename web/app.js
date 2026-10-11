@@ -154,9 +154,14 @@ function colorAsciiToOutput(gray, rgba, width, height, ramp, invert) {
  * HTML 渲染（复刻 render.go）
  * ============================================================ */
 
-// html.EscapeString 的等价实现（render.go 用它转义每个字符）
+// html.EscapeString 的等价实现（render.go 用它转义每个字符）。
+// 快速路径：绝大多数字符不含敏感字符，避免逐字符正则替换的开销。
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, function (c) {
+  s = String(s);
+  if (!/[&<>"']/.test(s)) {
+    return s;
+  }
+  return s.replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
@@ -176,23 +181,28 @@ function buildHtmlDocument(bodyHtml, title) {
  * 浏览器转换入口（ConvertFromImage / ConvertColorFromImage 的等价入口）
  * ============================================================ */
 
-// 把图片缩放到目标尺寸并读取像素。
-// 白底打底：透明像素按白色背景处理（与 image.go 的约定一致）；
-// imageSmoothing 开启对应 Go 的 draw.ApproxBiLinear 双线性缩放。
+// 复用同一块离屏画布：每帧新建 canvas 会带来大量分配与回收开销。
+// 重设宽高会自动清空画布并重置 2D 上下文状态，等效于新画布。
+var _scratchCanvas = null;
 function scaleImageToImageData(img, width, height) {
-  var canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  var ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!_scratchCanvas) {
+    _scratchCanvas = document.createElement('canvas');
+  }
+  _scratchCanvas.width = width;
+  _scratchCanvas.height = height;
+  var ctx = _scratchCanvas.getContext('2d', { willReadFrequently: true });
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(img, 0, 0, width, height);
+  // getImageData 返回独立副本，此后画布可安全复用
   return ctx.getImageData(0, 0, width, height);
 }
 
 // 网页版转换入口：img 为已解码的 HTMLImageElement。
 // opts: { width, ramp, customRamp, invert, color, aspectRatio }，对应 CLI 参数。
+// 返回结构化数据（gray/rgba），彩色 HTML（span 着色）体积大，
+// 只在下载 .html 时按需生成（colorAsciiToOutput），不在每次渲染时构建。
 function convertImage(img, opts) {
   var iw = img.naturalWidth || img.width;
   var ih = img.naturalHeight || img.height;
@@ -204,28 +214,17 @@ function convertImage(img, opts) {
   // （与 Go 一致：彩色模式的颜色来自按目标尺寸缩放的原始图）
   var data = scaleImageToImageData(img, size.width, size.height);
   var gray = rgbaToGray(data.data, size.width * size.height);
-
-  if (opts.color) {
-    var out = colorAsciiToOutput(gray, data.data, size.width, size.height, ramp, invert);
-    return {
-      mode: 'color',
-      width: size.width,
-      height: size.height,
-      plain: out.plain,
-      html: out.html,
-      ramp: ramp
-    };
-  }
-
   var lines = grayToAsciiLines(gray, size.width, size.height, ramp, invert);
-  var plain = lines.join('\n');
+
   return {
-    mode: 'gray',
+    mode: opts.color ? 'color' : 'gray',
     width: size.width,
     height: size.height,
-    plain: plain,
-    html: escapeHtml(plain),
-    ramp: ramp
+    plain: lines.join('\n'),
+    gray: gray,
+    rgba: data.data,
+    ramp: ramp,
+    invert: invert
   };
 }
 
@@ -252,6 +251,7 @@ function initApp() {
     fontSize: $('fontSize'),
     fontSizeVal: $('fontSizeVal'),
     ascii: $('ascii'),
+    asciiCanvas: $('asciiCanvas'),
     info: $('info'),
     error: $('error'),
     placeholder: $('placeholder'),
@@ -347,9 +347,9 @@ function initApp() {
     if (!state.image) return;
 
     var t0 = performance.now();
-    var result;
     try {
-      result = convertImage(state.image, readOptions());
+      state.result = convertImage(state.image, readOptions());
+      drawOutput(state.result);
     } catch (err) {
       state.result = null;
       setButtonsEnabled(false);
@@ -357,18 +357,94 @@ function initApp() {
       return;
     }
     showError('');
-    state.result = result;
-
-    if (result.mode === 'color') {
-      els.ascii.innerHTML = result.html;
-    } else {
-      els.ascii.textContent = result.plain;
-    }
+    var ms = performance.now() - t0;
+    var result = state.result;
     els.info.textContent = result.width + ' × ' + result.height + ' 字符 · ' +
-      (result.mode === 'color' ? '彩色' : '灰度') + ' · ' +
-      (performance.now() - t0).toFixed(1) + ' ms';
+      (result.mode === 'color' ? '彩色' : '灰度') + ' · ' + ms.toFixed(1) + ' ms';
     els.placeholder.hidden = true;
     setButtonsEnabled(true);
+  }
+
+  // ---- 输出绘制：灰度走文本节点（可选中、开销小）；
+  // ---- 彩色走 canvas——数万字符逐个建 <span> 会让 DOM 与排版开销失控 ----
+
+  var MONO_FONT = 'ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace';
+  var COLOR_BG = '#0a0d12'; // 与输出区背景一致
+
+  function currentFontSize() {
+    return parseInt(els.fontSize.value, 10) || 10;
+  }
+
+  function drawOutput(result) {
+    if (result.mode === 'color') {
+      els.ascii.hidden = true;
+      els.asciiCanvas.hidden = false;
+      drawColorCanvas(result);
+    } else {
+      els.asciiCanvas.hidden = true;
+      els.ascii.hidden = false;
+      els.ascii.textContent = result.plain;
+    }
+  }
+
+  // 等宽字符 advance 宽度（与页面同字体栈），用独立小画布测量
+  var _measureCtx = null;
+  function monoCharWidth(fontSize) {
+    if (!_measureCtx) {
+      _measureCtx = document.createElement('canvas').getContext('2d');
+    }
+    _measureCtx.font = fontSize + 'px ' + MONO_FONT;
+    return _measureCtx.measureText('M').width;
+  }
+
+  function drawColorCanvas(result) {
+    var fs = currentFontSize();
+    var charW = monoCharWidth(fs);
+    var cols = result.width;
+    var rows = result.height;
+    var cssW = cols * charW;
+    var cssH = rows * fs;
+
+    var canvas = els.asciiCanvas;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    // 位图像素上限 16M（≈4096²）：超出时降低有效 DPR，避免极端字号/宽度下位图过大
+    var dpr = Math.min(window.devicePixelRatio || 1,
+      Math.sqrt(16777216 / Math.max(1, cssW * cssH)));
+    if (dpr < 1) dpr = 1;
+    canvas.width = Math.max(1, Math.ceil(cssW * dpr));
+    canvas.height = Math.max(1, Math.ceil(cssH * dpr));
+
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = fs + 'px ' + MONO_FONT;
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = COLOR_BG;
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    var gray = result.gray;
+    var rgba = result.rgba;
+    var ramp = result.ramp;
+    var invert = result.invert;
+    var lastColor = '';
+    for (var y = 0; y < rows; y++) {
+      var row = y * cols;
+      var py = y * fs;
+      for (var x = 0; x < cols; x++) {
+        var i = row + x;
+        var ch = mapGrayToChar(gray[i], ramp, invert);
+        if (ch === ' ') {
+          continue; // 空白格即背景色，无需绘制
+        }
+        var o = i * 4;
+        var color = 'rgb(' + rgba[o] + ',' + rgba[o + 1] + ',' + rgba[o + 2] + ')';
+        if (color !== lastColor) {
+          ctx.fillStyle = color; // 相邻同色（平坦区域）跳过重复设置
+          lastColor = color;
+        }
+        ctx.fillText(ch, x * charW, py);
+      }
+    }
   }
 
   // 滑块连续拖动时节流：每帧最多重算一次
@@ -412,8 +488,13 @@ function initApp() {
     scheduleRender();
   });
   els.fontSize.addEventListener('input', function () {
-    els.ascii.style.fontSize = els.fontSize.value + 'px';
-    els.fontSizeVal.textContent = els.fontSize.value + 'px';
+    var fs = currentFontSize();
+    els.fontSizeVal.textContent = fs + 'px';
+    if (state.result && state.result.mode === 'color') {
+      drawColorCanvas(state.result); // 仅重绘画布，无需重新转换
+    } else {
+      els.ascii.style.fontSize = fs + 'px';
+    }
   });
 
   // ---- 导出 ----
@@ -469,13 +550,17 @@ function initApp() {
   });
 
   els.htmlBtn.addEventListener('click', function () {
-    if (state.result) {
-      download(
-        buildHtmlDocument(state.result.html, 'ASCII Art - ' + state.fileName),
-        'text/html;charset=utf-8',
-        '.html'
-      );
-    }
+    if (!state.result) return;
+    var r = state.result;
+    // span 着色 HTML 按需生成（对应 render.go RenderToHTML）
+    var bodyHtml = r.mode === 'color'
+      ? colorAsciiToOutput(r.gray, r.rgba, r.width, r.height, r.ramp, r.invert).html
+      : escapeHtml(r.plain);
+    download(
+      buildHtmlDocument(bodyHtml, 'ASCII Art - ' + state.fileName),
+      'text/html;charset=utf-8',
+      '.html'
+    );
   });
 
   setButtonsEnabled(false);

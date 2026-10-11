@@ -230,13 +230,17 @@ button:disabled {
   flex: 1;
   display: flex;
   min-height: 420px;
+  overflow: auto;
 }
+
+.output-body::-webkit-scrollbar { width: 10px; height: 10px; }
+.output-body::-webkit-scrollbar-thumb { background: #2d333b; border-radius: 5px; }
+.output-body::-webkit-scrollbar-track { background: transparent; }
 
 pre#ascii {
   margin: 0;
   padding: 14px 16px;
   flex: 1;
-  overflow: auto;
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1;
@@ -247,9 +251,12 @@ pre#ascii {
   user-select: text;
 }
 
-pre#ascii::-webkit-scrollbar { width: 10px; height: 10px; }
-pre#ascii::-webkit-scrollbar-thumb { background: #2d333b; border-radius: 5px; }
-pre#ascii::-webkit-scrollbar-track { background: transparent; }
+/* 彩色模式：字符画绘制在 canvas 上（display 由 [hidden] 规则控制） */
+#asciiCanvas {
+  display: block;
+  margin: 14px 16px;
+  background: var(--panel-2);
+}
 
 .placeholder {
   position: absolute;
