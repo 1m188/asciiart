@@ -1,0 +1,50 @@
+# pages.yml — 部署 web/ 静态页面到 GitHub Pages
+#
+# 使用前提（一次性手动设置）：
+#   仓库 Settings → Pages → Build and deployment → Source 选择 "GitHub Actions"
+#
+# 触发：push 到 main，或在 Actions 页面手动触发（workflow_dispatch）
+# 站点地址：https://<owner>.github.io/<repo>/（部署完成后见 deploy 步骤输出的 URL）
+#
+# 说明：web/index.html 以相对路径引用 style.css / app.js，
+#       无需任何构建步骤，直接把 web/ 目录作为站点发布。
+
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# deploy-pages 要求 job 具备 pages:write 与 id-token:write 权限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只允许一个 Pages 部署；排队等待而非取消进行中的部署
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static site (web/)
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
